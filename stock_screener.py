@@ -265,4 +265,8 @@ def run_screener():
 
 
 if __name__ == "__main__":
+
+# Save local HTML file for GitHub Pages hosting
+with open("index.html", "w", encoding="utf-8") as f:
+  f.write(html_body)
   run_screener()
