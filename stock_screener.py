@@ -10,9 +10,9 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
 RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL", "g_lally@yahoo.co.uk")
 
-# Multi-Cap, Global, Sector-Diversified Universe (Large, Mid, Small Caps & Value/Growth)
+# Diversified Global Multi-Cap Universe
 SCREEN_UNIVERSE = [
-    # US Mega/Large Growth & Tech
+    # Growth / Tech Leaders
     "AAPL",
     "MSFT",
     "GOOGL",
@@ -22,7 +22,7 @@ SCREEN_UNIVERSE = [
     "AVGO",
     "AMD",
     "TSLA",
-    # US Large Value, Financials & Industrial
+    # Value / Defensive / Large Caps
     "BRK-B",
     "JPM",
     "BAC",
@@ -37,14 +37,14 @@ SCREEN_UNIVERSE = [
     "GE",
     "XOM",
     "CVX",
-    # Healthcare & Biotech
+    # Healthcare
     "LLY",
     "JNJ",
     "UNH",
     "PFE",
     "ABBV",
     "MRK",
-    # Global / International ADRs (UK, Europe, Asia)
+    # Global Giants (Europe, UK, Asia ADRs)
     "SHEL",
     "AZN",
     "GSK",
@@ -56,23 +56,20 @@ SCREEN_UNIVERSE = [
     "TSM",
     "BABA",
     "SONY",
-    # Mid-Cap & Small-Cap High Growth / Value
+    # Mid/Small Caps
     "CROX",
     "CELH",
     "ELF",
     "DUOL",
-    "RBNK",
     "ONTO",
     "MEDP",
     "WING",
     "BOOT",
     "SBUX",
-    "PATH",
 ]
 
 
 def classify_market_cap(mcap):
-  """Classifies company into Large, Mid, or Small Cap."""
   if not mcap or mcap == 0:
     return "N/A"
   elif mcap >= 10_000_000_000:
@@ -83,16 +80,66 @@ def classify_market_cap(mcap):
     return "Small Cap"
 
 
-def screen_stock(symbol):
-  """Evaluates technicals & fundamentals across Growth, Value, and Size."""
-  ticker_obj = yf.Ticker(symbol)
+def generate_signal_and_reason(
+    uptrend, golden_cross, macd_bull, rsi, peg_ratio, price, sma_200
+):
+  """Evaluates data to assign Buy/Hold/Sell signal with primary reasoning."""
+  reasons = []
 
-  # Download 1 year daily history
+  # Check Technical Conditions
+  if uptrend:
+    reasons.append("Above 200-SMA")
+  else:
+    reasons.append("Below 200-SMA (Downtrend)")
+
+  if golden_cross:
+    reasons.append("50-SMA > 200-SMA Cross")
+
+  if macd_bull:
+    reasons.append("MACD Bullish Momentum")
+  else:
+    reasons.append("MACD Bearish Crossover")
+
+  # Valuation & RSI Checks
+  if rsi > 70:
+    reasons.append("Overbought RSI (>70)")
+  elif rsi < 30:
+    reasons.append("Oversold RSI (<30)")
+
+  if peg_ratio and peg_ratio > 2.5:
+    reasons.append("High Valuation (PEG > 2.5)")
+
+  # --- Signal Decision Logic ---
+  if not uptrend and macd_bull == False:
+    signal = "SELL / AVOID"
+    primary_reason = "Strong Downtrend & Bearish MACD Momentum"
+  elif rsi > 72 or (peg_ratio and peg_ratio > 3.0):
+    signal = "SELL / TRIM"
+    primary_reason = "Overbought RSI or Overextended Valuation"
+  elif uptrend and golden_cross and macd_bull and (35 <= rsi <= 65):
+    if peg_ratio and peg_ratio <= 1.5:
+      signal = "STRONG BUY"
+      primary_reason = "Bullish Technical Setup + Growth at Reasonable Price"
+    else:
+      signal = "BUY"
+      primary_reason = "Bullish Trend Confirmation & Healthy RSI Momentum"
+  elif uptrend or macd_bull:
+    signal = "HOLD"
+    primary_reason = "Mixed Signals; Price Holding Trend Support"
+  else:
+    signal = "HOLD"
+    primary_reason = "Consolidating Neutral Setup"
+
+  return signal, primary_reason
+
+
+def screen_stock(symbol):
+  ticker_obj = yf.Ticker(symbol)
   df = ticker_obj.history(period="1y", interval="1d")
+
   if len(df) < 200:
     return None
 
-  # Retrieve Fundamental Data safely
   try:
     info = ticker_obj.info
     mcap = info.get("marketCap", 0)
@@ -104,18 +151,16 @@ def screen_stock(symbol):
 
   cap_category = classify_market_cap(mcap)
 
-  # --- Technical Calculations ---
+  # Technical Indicators
   df["SMA_50"] = df["Close"].rolling(50).mean()
   df["SMA_200"] = df["Close"].rolling(200).mean()
 
-  # RSI
   delta = df["Close"].diff()
   gain = (delta.where(delta > 0, 0)).rolling(14).mean()
   loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
   rs = gain / loss
   df["RSI"] = 100 - (100 / (1 + rs))
 
-  # MACD
   ema12 = df["Close"].ewm(span=12, adjust=False).mean()
   ema26 = df["Close"].ewm(span=26, adjust=False).mean()
   df["MACD"] = ema12 - ema26
@@ -123,48 +168,47 @@ def screen_stock(symbol):
 
   latest = df.iloc[-1]
 
-  # --- Screening Conditions ---
-  uptrend = latest["Close"] > latest["SMA_200"]
-  golden_cross = latest["SMA_50"] > latest["SMA_200"]
-  macd_bull = latest["MACD"] > latest["Signal"]
-  rsi_healthy = 40 <= latest["RSI"] <= 65
+  uptrend = bool(latest["Close"] > latest["SMA_200"])
+  golden_cross = bool(latest["SMA_50"] > latest["SMA_200"])
+  macd_bull = bool(latest["MACD"] > latest["Signal"])
+  rsi_val = float(latest["RSI"])
 
-  # Valuation check (Value or Growth at Reasonable Price)
-  valuation_ok = True
-  if peg_ratio and peg_ratio > 2.5:  # Filter out hyper-overvalued growth
-    valuation_ok = False
+  # Generate Signal & Rationale
+  signal, primary_reason = generate_signal_and_reason(
+      uptrend=uptrend,
+      golden_cross=golden_cross,
+      macd_bull=macd_bull,
+      rsi=rsi_val,
+      peg_ratio=peg_ratio,
+      price=latest["Close"],
+      sma_200=latest["SMA_200"],
+  )
 
-  score = sum([uptrend, golden_cross, macd_bull, rsi_healthy, valuation_ok])
+  fifty_two_high = df["High"].max()
+  pullback = round(((fifty_two_high - latest["Close"]) / fifty_two_high) * 100, 1)
 
-  # Require 4+ score for candidate shortlist
-  if score >= 4:
-    fifty_two_high = df["High"].max()
-    pullback = round(((fifty_two_high - latest["Close"]) / fifty_two_high) * 100, 1)
-
-    return {
-        "Ticker": symbol,
-        "Sector": sector,
-        "Cap Size": cap_category,
-        "Price": f"${latest['Close']:.2f}",
-        "Score": f"{score}/5",
-        "RSI": round(latest["RSI"], 1),
-        "P/E": round(pe_ratio, 1) if pe_ratio else "N/A",
-        "PEG": round(peg_ratio, 2) if peg_ratio else "N/A",
-        "50 SMA Supp": f"${latest['SMA_50']:.2f}",
-        "Off 52-Wk High": f"-{pullback}%",
-    }
-  return None
+  return {
+      "Ticker": symbol,
+      "Sector": sector,
+      "Cap Size": cap_category,
+      "Price": f"${latest['Close']:.2f}",
+      "Signal": signal,
+      "Primary Rationale": primary_reason,
+      "RSI": round(rsi_val, 1),
+      "P/E": round(pe_ratio, 1) if pe_ratio else "N/A",
+      "PEG": round(peg_ratio, 2) if peg_ratio else "N/A",
+      "Off 52W High": f"-{pullback}%",
+  }
 
 
 def send_email_alert(report_df):
-  """Sends structured HTML report to user email."""
   if not SENDER_EMAIL or not SENDER_PASSWORD:
     print("Missing email configuration credentials. Skipping send.")
     return
 
   msg = MIMEMultipart("alternative")
   msg["Subject"] = (
-      f"🌐 GLOBAL MULTI-CAP STOCK SCREENER ({len(report_df)} Watchlist Picks)"
+      f"🌐 GLOBAL EQUITY SIGNALS ({len(report_df)} Tickers Evaluated)"
   )
   msg["From"] = SENDER_EMAIL
   msg["To"] = RECEIVER_EMAIL
@@ -174,11 +218,11 @@ def send_email_alert(report_df):
   html_body = f"""
     <html>
       <body style="font-family: Arial, sans-serif; color: #222;">
-        <h2>Global Diversified Stock Screener</h2>
-        <p>Shortlist of global equities matching institutional trend & fundamental valuation thresholds:</p>
+        <h2>Global Multi-Cap Equity Signals & Rationale</h2>
+        <p>Breakdown of Buy, Hold, and Sell signals with primary rationale across global equities:</p>
         {html_table}
         <br>
-        <p><b>Legend:</b> Score is out of 5 (Technicals + Valuation). P/E & PEG monitor Growth vs Value parameters.</p>
+        <p><b>Signals Key:</b> STRONG BUY / BUY (Trend & Valuation Aligned), HOLD (Neutral/Consolidating), SELL (Downtrend or Overextended).</p>
       </body>
     </html>
     """
@@ -197,7 +241,7 @@ def send_email_alert(report_df):
 
 
 def run_screener():
-  print("=== SCREENING GLOBAL MULTI-CAP EQUITIES ===")
+  print("=== EVALUATING GLOBAL EQUITIES WITH SIGNALS ===")
   results = []
 
   for ticker in SCREEN_UNIVERSE:
@@ -210,11 +254,9 @@ def run_screener():
 
   if results:
     report_df = pd.DataFrame(results)
-    print("\n--- QUALIFIED GLOBAL WATCHLIST ---")
+    print("\n--- GLOBAL WATCHLIST SIGNALS ---")
     print(report_df.to_string(index=False))
     send_email_alert(report_df)
-  else:
-    print("\nNo stocks met all high-conviction criteria today.")
 
 
 if __name__ == "__main__":
